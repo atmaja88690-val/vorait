@@ -4,6 +4,7 @@
   "description": "Kegiatan Tim IT Vora — monitoring kegiatan & proyek tim IT",
   "workspaces": [
     "packages/shared",
+    "db",
     "apps/api",
     "apps/ddl-worker",
     "apps/web"
