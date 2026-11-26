@@ -1,48 +1,27 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { jalankanMigrasi } from '../src/migrate.js';
-
-const AKAR = join(dirname(fileURLToPath(import.meta.url)), '..');
-const ADMIN = process.env['UJI_PG_ADMIN_URL'] ?? '';
-const PW = (r: string) => process.env[`UJI_PW_${r.toUpperCase()}`] ?? `uji_${r}`;
+import { ADMIN, PELAKU, siapkanDb, type DbUji } from './bantu.js';
 
 /** T-005: tabel inti ds_monitoring — bentuk, batasan, seed, hak mon_app. Semua tulis uji di-ROLLBACK. */
 describe('T-005 tabel inti ds_monitoring', { skip: !ADMIN && 'UJI_PG_ADMIN_URL tidak diisi' }, () => {
-  const db = `uji_inti_${process.pid}`;
-  const host = process.env['UJI_PG_HOST'] ?? '/tmp';
-  const port = Number(process.env['UJI_PG_PORT'] ?? 55432);
-  const sambung = (user: string) => new pg.Client({ host, port, database: db, user, password: PW(user) });
-  let admin: pg.Client;
+  let d: DbUji;
   let app: pg.Client;
 
   before(async () => {
-    admin = new pg.Client({ connectionString: ADMIN });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE ${db} OWNER mon_owner TEMPLATE template0`);
-    const a2 = new pg.Client({ connectionString: ADMIN.replace(/\/[^/?]*(\?|$)/, `/${db}$1`) });
-    await a2.connect();
-    await a2.query(await readFile(join(AKAR, 'bootstrap', '00_superuser.sql'), 'utf8'));
-    await a2.end();
-    const o = sambung('mon_owner');
-    await o.connect();
-    await jalankanMigrasi(o, join(AKAR, 'migrations'), 'terapkan');
-    await o.end();
-    app = sambung('mon_app');
+    d = await siapkanDb('uji_inti');
+    app = d.sambung('mon_app');
     await app.connect();
   });
   after(async () => {
     await app.end();
-    await admin.query(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);
-    await admin.end();
+    await d.hapus();
   });
 
   /** Jalankan fn di transaksi mon_app yang selalu di-ROLLBACK. */
   async function uji(fn: (q: (sql: string, p?: unknown[]) => Promise<pg.QueryResult>) => Promise<void>) {
     await app.query('BEGIN');
+    await app.query(`SELECT set_config('app.user_id', $1, true)`, [PELAKU]);
     try {
       await fn((sql, p) => app.query(sql, p));
     } finally {
