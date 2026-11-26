@@ -1,0 +1,416 @@
+// Prisma 6.19.3 — HANYA skema auth, studio, audit (D-3, FR-84).
+// Skema ds_monitoring dikelola runner SQL (db/) dan pipa DDL Builder; JANGAN dimodelkan di sini.
+// Migrasi SQL dihasilkan engine resmi di container app (vora-step04a), bukan ditulis tangan.
+// citext dipasang oleh bootstrap superuser (db/bootstrap), bukan oleh Prisma.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["auth", "studio", "audit"]
+}
+
+// ───────────────────────────── auth ─────────────────────────────
+
+model User {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email            String    @unique @db.Citext
+  displayName      String    @map("display_name") @db.VarChar(120)
+  passwordHash     String    @map("password_hash")
+  isFrameworkAdmin Boolean   @default(false) @map("is_framework_admin")
+  isActive         Boolean   @default(true) @map("is_active")
+  failedCount      Int       @default(0) @map("failed_count") @db.SmallInt
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz(6)
+  noticeAckAt      DateTime? @map("notice_ack_at") @db.Timestamptz(6)
+  lastSeenAt       DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion       Int       @default(1) @map("row_version")
+
+  sessions  Session[]
+  apiKeys   ApiKey[]   @relation("ApiKeyCreator")
+  userRoles UserRole[]
+  gridViews GridView[]
+  ddlPlans  DdlPlan[]  @relation("DdlPlanApprover")
+  releases  Release[]  @relation("ReleasePublisher")
+
+  @@map("users")
+  @@schema("auth")
+}
+
+model Session {
+  idHash     Bytes    @id @map("id_hash") // sha256(token); token mentah tidak pernah disimpan
+  userId     String   @map("user_id") @db.Uuid
+  csrfToken  String   @map("csrf_token") @db.VarChar(64)
+  ip         String?  @db.Inet
+  userAgent  String?  @map("user_agent") @db.VarChar(400)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+  @@schema("auth")
+}
+
+model ApiKey {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String    @db.VarChar(80)
+  prefix     String    @unique @db.Char(8)
+  keyHash    Bytes     @map("key_hash")
+  scopes     String[]  @default([])
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?   @map("created_by") @db.Uuid
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?   @map("updated_by") @db.Uuid
+  rowVersion Int       @default(1) @map("row_version")
+
+  creator User? @relation("ApiKeyCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@map("api_keys")
+  @@schema("auth")
+}
+
+// ───────────────────────────── studio ─────────────────────────────
+// Pola definisi: *_defs = draf kerja (satu baris per nama); *_def_versions = versi terbit (tidak diubah).
+
+model ResourceDef {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String    @unique @db.VarChar(63)
+  draft            Json
+  publishedVersion Int?      @map("published_version")
+  isSystem         Boolean   @default(false) @map("is_system")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion       Int       @default(1) @map("row_version")
+
+  versions ResourceDefVersion[]
+
+  @@map("resource_defs")
+  @@schema("studio")
+}
+
+model ResourceDefVersion {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resourceDefId String   @map("resource_def_id") @db.Uuid
+  version       Int
+  definition    Json
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?  @map("created_by") @db.Uuid
+
+  resourceDef ResourceDef @relation(fields: [resourceDefId], references: [id], onDelete: Restrict)
+
+  @@unique([resourceDefId, version])
+  @@map("resource_def_versions")
+  @@schema("studio")
+}
+
+model GridDef {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String    @unique @db.VarChar(63)
+  resource         String    @db.VarChar(63)
+  draft            Json
+  publishedVersion Int?      @map("published_version")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion       Int       @default(1) @map("row_version")
+
+  versions GridDefVersion[]
+  views    GridView[]
+
+  @@index([resource])
+  @@map("grid_defs")
+  @@schema("studio")
+}
+
+model GridDefVersion {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  gridDefId  String   @map("grid_def_id") @db.Uuid
+  version    Int
+  definition Json
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+
+  gridDef GridDef @relation(fields: [gridDefId], references: [id], onDelete: Restrict)
+
+  @@unique([gridDefId, version])
+  @@map("grid_def_versions")
+  @@schema("studio")
+}
+
+model FormDef {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String    @unique @db.VarChar(63)
+  resource         String    @db.VarChar(63)
+  draft            Json
+  publishedVersion Int?      @map("published_version")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion       Int       @default(1) @map("row_version")
+
+  versions FormDefVersion[]
+
+  @@index([resource])
+  @@map("form_defs")
+  @@schema("studio")
+}
+
+model FormDefVersion {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  formDefId  String   @map("form_def_id") @db.Uuid
+  version    Int
+  definition Json
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+
+  formDef FormDef @relation(fields: [formDefId], references: [id], onDelete: Restrict)
+
+  @@unique([formDefId, version])
+  @@map("form_def_versions")
+  @@schema("studio")
+}
+
+/// Tampilan grid tersimpan; userId NULL = tampilan bersama.
+model GridView {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  gridDefId  String    @map("grid_def_id") @db.Uuid
+  userId     String?   @map("user_id") @db.Uuid
+  name       String    @db.VarChar(80)
+  isDefault  Boolean   @default(false) @map("is_default")
+  state      Json
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?   @map("created_by") @db.Uuid
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?   @map("updated_by") @db.Uuid
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion Int       @default(1) @map("row_version")
+
+  gridDef GridDef @relation(fields: [gridDefId], references: [id], onDelete: Restrict)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([gridDefId, userId])
+  @@map("grid_views")
+  @@schema("studio")
+}
+
+model Menu {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key           String    @unique @db.VarChar(63)
+  parentId      String?   @map("parent_id") @db.Uuid
+  label         String    @db.VarChar(80)
+  icon          String?   @db.VarChar(40)
+  path          String?   @db.VarChar(200)
+  resource      String?   @db.VarChar(63)
+  requiredRight String?   @map("required_right") @db.VarChar(20)
+  sort          Int       @default(0)
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?   @map("updated_by") @db.Uuid
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion    Int       @default(1) @map("row_version")
+
+  parent   Menu?  @relation("MenuTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Menu[] @relation("MenuTree")
+
+  @@index([parentId])
+  @@map("menus")
+  @@schema("studio")
+}
+
+model AppRole {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code        String    @unique @db.VarChar(40)
+  name        String    @db.VarChar(80)
+  description String?
+  isSystem    Boolean   @default(false) @map("is_system")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  rowVersion  Int       @default(1) @map("row_version")
+
+  grants    RoleGrant[]
+  userRoles UserRole[]
+
+  @@map("app_roles")
+  @@schema("studio")
+}
+
+model RoleGrant {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  resource   String   @db.VarChar(63)
+  rights     String[] @default([])
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?  @map("updated_by") @db.Uuid
+  rowVersion Int      @default(1) @map("row_version")
+
+  role AppRole @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([roleId, resource])
+  @@map("role_grants")
+  @@schema("studio")
+}
+
+/// teamId merujuk ds_monitoring.teams (di luar Prisma, tanpa FK lintas jalur — dicek di servis). NULL = semua tim.
+model UserRole {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  teamId     String?  @map("team_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.Uuid
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?  @map("updated_by") @db.Uuid
+  rowVersion Int      @default(1) @map("row_version")
+
+  user User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role AppRole @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, roleId, teamId])
+  @@index([roleId])
+  @@map("user_roles")
+  @@schema("studio")
+}
+
+enum DdlRisk {
+  safe
+  review
+  blocked
+
+  @@map("ddl_risk")
+  @@schema("studio")
+}
+
+enum DdlPlanStatus {
+  draft
+  approved
+  running
+  done
+  failed
+  rejected
+
+  @@map("ddl_plan_status")
+  @@schema("studio")
+}
+
+model DdlPlan {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resource    String        @db.VarChar(63)
+  baseVersion Int?          @map("base_version")
+  statements  Json
+  risk        DdlRisk
+  status      DdlPlanStatus @default(draft)
+  approvedBy  String?       @map("approved_by") @db.Uuid
+  approvedAt  DateTime?     @map("approved_at") @db.Timestamptz(6)
+  result      Json?
+  backupFile  String?       @map("backup_file") @db.VarChar(300)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?       @map("created_by") @db.Uuid
+  updatedAt   DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?       @map("updated_by") @db.Uuid
+  rowVersion  Int           @default(1) @map("row_version")
+
+  approver User? @relation("DdlPlanApprover", fields: [approvedBy], references: [id], onDelete: Restrict)
+
+  @@index([resource, status])
+  @@map("ddl_plans")
+  @@schema("studio")
+}
+
+/// Terbitan definisi (FR-87). Rollback = terbitan baru yang isinya sama dengan versi lama (rollbackOf).
+model Release {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version     Int      @unique
+  snapshot    Json
+  note        String?
+  rollbackOf  Int?     @map("rollback_of")
+  publishedBy String   @map("published_by") @db.Uuid
+  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(6)
+
+  publisher User @relation("ReleasePublisher", fields: [publishedBy], references: [id], onDelete: Restrict)
+
+  @@map("releases")
+  @@schema("studio")
+}
+
+// ───────────────────────────── audit ─────────────────────────────
+// Hanya-tambah: mon_app INSERT saja (GRANT di migrasi kustom). Tanpa FK supaya audit tetap utuh apa pun yang terjadi pada data.
+
+model DataChange {
+  id        BigInt   @id @default(autoincrement())
+  at        DateTime @default(now()) @db.Timestamptz(6)
+  actorId   String?  @map("actor_id") @db.Uuid
+  txid      BigInt   @default(dbgenerated("txid_current()"))
+  tableName String   @map("table_name") @db.VarChar(130)
+  rowId     String?  @map("row_id") @db.Uuid
+  op        String   @db.Char(1) // I / U / D
+  oldData   Json?    @map("old_data")
+  newData   Json?    @map("new_data")
+  changed   String[] @default([])
+
+  @@index([tableName, rowId])
+  @@index([at])
+  @@map("data_changes")
+  @@schema("audit")
+}
+
+model DefChange {
+  id      BigInt   @id @default(autoincrement())
+  at      DateTime @default(now()) @db.Timestamptz(6)
+  actorId String?  @map("actor_id") @db.Uuid
+  kind    String   @db.VarChar(20) // resource / grid / form / menu / role / release
+  name    String   @db.VarChar(63)
+  action  String   @db.VarChar(20) // save_draft / publish / rollback / delete
+  version Int?
+  before  Json?
+  after   Json?
+
+  @@index([kind, name])
+  @@index([at])
+  @@map("def_changes")
+  @@schema("audit")
+}
+
+model DdlRun {
+  id         BigInt   @id @default(autoincrement())
+  at         DateTime @default(now()) @db.Timestamptz(6)
+  actorId    String?  @map("actor_id") @db.Uuid
+  planId     String?  @map("plan_id") @db.Uuid
+  statements String
+  ok         Boolean
+  error      String?
+  durationMs Int?     @map("duration_ms")
+  backupFile String?  @map("backup_file") @db.VarChar(300)
+
+  @@index([planId])
+  @@index([at])
+  @@map("ddl_runs")
+  @@schema("audit")
+}
