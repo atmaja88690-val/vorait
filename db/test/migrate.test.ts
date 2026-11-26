@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { GalatMigrasi, jalankanMigrasi, rencanakan, sha256 } from '../src/migrate.js';
+import { GalatMigrasi, bacaBerkas, jalankanMigrasi, rencanakan, sha256 } from '../src/migrate.js';
 
 const AKAR = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -69,12 +69,14 @@ describe('runner + DCL di PostgreSQL nyata', { skip: !ADMIN && 'UJI_PG_ADMIN_URL
   test('cek tidak membuat apa pun; terapkan sekali; ulang = 0 tertunda', async () => {
     const c = sambung('mon_owner');
     await c.connect();
+    const semua = (await bacaBerkas(join(AKAR, 'migrations'))).map((b) => b.nama);
+    assert.ok(semua.length >= 3 && semua[0] === '0001_hak_akses.sql');
     const h1 = await jalankanMigrasi(c, join(AKAR, 'migrations'), 'cek');
-    assert.deepEqual(h1.tertunda, ['0001_hak_akses.sql']);
+    assert.deepEqual(h1.tertunda, semua);
     const ada = await c.query(`SELECT to_regclass('ds_monitoring._migrations') AS t`);
     assert.equal(ada.rows[0].t, null);
     const h2 = await jalankanMigrasi(c, join(AKAR, 'migrations'), 'terapkan');
-    assert.deepEqual(h2.diterapkan, ['0001_hak_akses.sql']);
+    assert.deepEqual(h2.diterapkan, semua);
     const h3 = await jalankanMigrasi(c, join(AKAR, 'migrations'), 'terapkan');
     assert.deepEqual(h3.diterapkan, []);
     await c.end();
@@ -97,7 +99,7 @@ describe('runner + DCL di PostgreSQL nyata', { skip: !ADMIN && 'UJI_PG_ADMIN_URL
     const dir = await mkdtemp(join(tmpdir(), 'mig-'));
     await cp(join(AKAR, 'migrations'), dir, { recursive: true });
     await writeFile(
-      join(dir, '0002_rusak.sql'),
+      join(dir, '0099_rusak.sql'),
       'CREATE TABLE ds_monitoring.uji_rusak(id int);\nSELECT 1/0;\n',
     );
     const c = sambung('mon_owner');
@@ -110,7 +112,7 @@ describe('runner + DCL di PostgreSQL nyata', { skip: !ADMIN && 'UJI_PG_ADMIN_URL
     assert.equal(t.rows[0].t, null);
     await c.query('BEGIN; SET LOCAL ROLE mon_schema;');
     const n = await c.query(
-      `SELECT count(*)::int AS n FROM ds_monitoring._migrations WHERE nama = '0002_rusak.sql'`,
+      `SELECT count(*)::int AS n FROM ds_monitoring._migrations WHERE nama = '0099_rusak.sql'`,
     );
     await c.query('COMMIT');
     assert.equal(n.rows[0].n, 0);
