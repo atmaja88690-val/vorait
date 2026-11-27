@@ -21,7 +21,9 @@ describe('T-005 tabel inti ds_monitoring', { skip: !ADMIN && 'UJI_PG_ADMIN_URL t
   /** Jalankan fn di transaksi mon_app yang selalu di-ROLLBACK. */
   async function uji(fn: (q: (sql: string, p?: unknown[]) => Promise<pg.QueryResult>) => Promise<void>) {
     await app.query('BEGIN');
-    await app.query(`SELECT set_config('app.user_id', $1, true)`, [PELAKU]);
+    await app.query(`SELECT set_config('app.user_id', $1, true), set_config('app.role', 'admin', true)`, [
+      PELAKU,
+    ]);
     try {
       await fn((sql, p) => app.query(sql, p));
     } finally {

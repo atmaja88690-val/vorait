@@ -13,7 +13,9 @@ describe('T-006 trigger ds_monitoring', { skip: !ADMIN && 'UJI_PG_ADMIN_URL tida
   async function tulis(c: pg.Client, sql: string, p: unknown[] = []) {
     await c.query('BEGIN');
     try {
-      await c.query(`SELECT set_config('app.user_id', $1, true)`, [PELAKU]);
+      await c.query(`SELECT set_config('app.user_id', $1, true), set_config('app.role', 'admin', true)`, [
+        PELAKU,
+      ]);
       const r = await c.query(sql, p);
       await c.query('COMMIT');
       return r;
@@ -198,7 +200,9 @@ describe('T-006 trigger ds_monitoring', { skip: !ADMIN && 'UJI_PG_ADMIN_URL tida
     try {
       for (const c of [a, b]) {
         await c.query('BEGIN');
-        await c.query(`SELECT set_config('app.user_id', $1, true)`, [PELAKU]);
+        await c.query(`SELECT set_config('app.user_id', $1, true), set_config('app.role', 'admin', true)`, [
+          PELAKU,
+        ]);
       }
       await a.query(ev, [ids['emp'], ids['kat_cuti'], '2026-12-03']); // A memegang kunci, belum COMMIT
       const pb = b.query(ev, [ids['emp'], ids['kat_kerja_proyek'], '2026-12-03']).then(

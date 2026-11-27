@@ -22,7 +22,9 @@ describe('T-007 function & procedure', { skip: !ADMIN && 'UJI_PG_ADMIN_URL tidak
 
   async function uji(fn: (q: Q) => Promise<void>) {
     await app.query('BEGIN');
-    await app.query(`SELECT set_config('app.user_id', $1, true)`, [PELAKU]);
+    await app.query(`SELECT set_config('app.user_id', $1, true), set_config('app.role', 'admin', true)`, [
+      PELAKU,
+    ]);
     try {
       await fn((sql, p) => app.query(sql, p));
     } finally {
